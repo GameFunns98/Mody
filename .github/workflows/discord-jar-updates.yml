@@ -87,13 +87,9 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           python - <<'PY'
-          import json, os, sys, urllib.request
+          import json, os, sys, urllib.request, urllib.error
 
           webhook = (os.environ.get("DISCORD_WEBHOOK") or "").strip()
-          if not webhook:
-            print("Missing DISCORD_WEBHOOK secret", file=sys.stderr)
-            sys.exit(1)
-
           with open("payload.json","r",encoding="utf-8") as f:
             payload = json.load(f)
 
@@ -102,7 +98,17 @@ jobs:
             sys.exit(0)
 
           data = json.dumps(payload).encode("utf-8")
-          req = urllib.request.Request(webhook, data=data, headers={"Content-Type":"application/json"})
-          with urllib.request.urlopen(req) as r:
-            print("Discord OK:", r.status)
+          req = urllib.request.Request(
+            webhook,
+            data=data,
+            headers={"Content-Type":"application/json","User-Agent":"GitHubActions-DiscordWebhook"}
+          )
+
+          try:
+            with urllib.request.urlopen(req) as r:
+              print("Discord OK:", r.status)
+          except urllib.error.HTTPError as e:
+            print("Discord HTTPError:", e.code, e.reason)
+            print(e.read().decode("utf-8", "replace"))
+            raise
           PY
