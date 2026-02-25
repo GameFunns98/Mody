@@ -1,0 +1,105 @@
+name: Discord notify (JAR updates)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "*.jar"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (need previous commit for diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Build Discord payload
+        run: |
+          python - <<'PY'
+          import json, subprocess, os
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          branch = os.environ["GITHUB_REF_NAME"]
+          sha = os.environ["GITHUB_SHA"]
+          actor = os.environ["GITHUB_ACTOR"]
+
+          diff = subprocess.check_output(["bash","-lc","git diff --name-status HEAD~1..HEAD"], text=True).splitlines()
+
+          changes = []
+          for line in diff:
+            if not line.strip():
+              continue
+            status, path = line.split("\t", 1)
+            status = status.strip()
+            path = path.strip()
+            if not path.lower().endswith(".jar"):
+              continue
+            changes.append((status, path))
+
+          if not changes:
+            with open("payload.json","w",encoding="utf-8") as f:
+              json.dump({"_skip": True}, f)
+            raise SystemExit(0)
+
+          def raw_url(p):
+            return f"https://raw.githubusercontent.com/{repo}/{branch}/{p}"
+
+          rows = []
+          for status, path in changes[:15]:
+            tag = {"A":"ADD", "M":"UPD", "D":"DEL"}.get(status, status)
+            if status == "D":
+              rows.append(f"{tag}  {path}")
+            else:
+              rows.append(f"{tag}  {path}\n{raw_url(path)}")
+
+          more = ""
+          if len(changes) > 15:
+            more = f"\n(+{len(changes)-15} dalších změn)"
+
+          embed = {
+            "title": "Update modů (.jar) v repu",
+            "description": f"Autor: {actor}\nBranch: {branch}\nCommit: {sha[:7]}{more}",
+            "url": f"https://github.com/{repo}/commit/{sha}",
+            "fields": [
+              {
+                "name": "Změněné soubory a přímé download linky",
+                "value": "\n\n".join(rows)[:1024]
+              }
+            ]
+          }
+
+          payload = {
+            "username": "Mody Notifier",
+            "embeds": [embed]
+          }
+
+          with open("payload.json","w",encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+          PY
+
+      - name: Send to Discord webhook
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import json, os, sys, urllib.request
+
+          webhook = os.environ.get("DISCORD_WEBHOOK","").strip()
+          if not webhook:
+            print("Missing DISCORD_WEBHOOK secret", file=sys.stderr)
+            sys.exit(1)
+
+          with open("payload.json","r",encoding="utf-8") as f:
+            payload = json.load(f)
+
+          if payload.get("_skip"):
+            print("No .jar changes detected. Skipping.")
+            sys.exit(0)
+
+          data = json.dumps(payload).encode("utf-8")
+          req = urllib.request.Request(webhook, data=data, headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(req) as r:
+            print("Discord OK:", r.status)
+          PY
